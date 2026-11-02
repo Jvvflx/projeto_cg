@@ -16,9 +16,12 @@
 #include <cmath>
 #include <cstdlib>
 #include <iostream>
-
 #include <chrono>
 #include <thread>
+#include <cctype>
+#include <cerrno>
+#include <string>
+#include <cstdio>
 
 float raio = 1.0f;
 float sol[3] = {5.0f, 2.0f, 3.0f};
@@ -32,7 +35,150 @@ const float FOV = 45.0f;
 
 const double FPS_MAXIMO = 60.0;   // limite de quadros por segundo (limitador por software)
 
+const float PROPORCAO_SOL = 0.25f;   // raio do Sol em relação ao raio do planeta
+const float LIMITE_VALOR  = 1.0e6f;  // maior valor absoluto aceito na entrada
+
 GLUquadric* quadrica;
+
+//Converte o texto em exatamente n números reais finitos.
+//Retorna false se faltar número, sobrar caractere, houver estouro
+//de faixa ou valor não finito (nan, inf).
+bool lerNumeros(const char* texto, float* valores, int n)
+{
+    const char* p = texto;
+
+    for (int i = 0; i < n; i++)
+    {
+        char* fim;
+        errno = 0;
+        float v = std::strtof(p, &fim);
+
+        //fim == p: nada foi convertido; ERANGE: não cabe em float
+        if (fim == p || errno == ERANGE || !std::isfinite(v))
+            return false;
+
+        valores[i] = v;
+        p = fim;
+    }
+
+    //depois dos n números só podem sobrar espaços
+    while (std::isspace((unsigned char)*p))
+        p++;
+
+    return *p == '\0';
+}
+
+//Verifica se os parâmetros formam uma cena válida.
+//Retorna NULL se estiver tudo certo, ou a mensagem de erro.
+const char* validarCena(float raioPlaneta, const float posSol[3])
+{
+    if (raioPlaneta <= 0.0f)
+        return "o raio do planeta deve ser positivo.";
+
+    if (raioPlaneta > LIMITE_VALOR)
+        return "o raio do planeta deve ser no maximo 1e6.";
+
+    for (int i = 0; i < 3; i++)
+        if (std::fabs(posSol[i]) > LIMITE_VALOR)
+            return "as coordenadas do Sol devem estar entre -1e6 e 1e6.";
+
+    //o Sol não pode tocar o planeta: distância entre os centros
+    //tem de ser maior que a soma dos raios
+    float distSol = std::sqrt(posSol[0]*posSol[0] + posSol[1]*posSol[1] + posSol[2]*posSol[2]);
+    if (distSol <= raioPlaneta * (1.0f + PROPORCAO_SOL))
+        return "o Sol esta dentro ou encostado no planeta; afaste-o do centro.";
+
+    return NULL;
+}
+
+void mostrarUso(const char* programa)
+{
+    std::cerr << "Uso: " << programa << " <raio> <solX> <solY> <solZ>\n"
+              << "  Ex.: " << programa << " 1.0 5 2 3\n"
+              << "  Sem argumentos, os valores sao pedidos pelo teclado.\n"
+              << "  Use ponto como separador decimal (1.5, nao 1,5).\n";
+}
+
+//Lê uma linha do teclado e converte em n números, repetindo até a
+//entrada ser válida. Retorna false se a entrada terminar (Ctrl+D).
+bool perguntarNumeros(const char* pergunta, float* valores, int n)
+{
+    std::string linha;
+
+    while (true)
+    {
+        std::cout << pergunta;
+
+        if (!std::getline(std::cin, linha))
+            return false;
+
+        if (lerNumeros(linha.c_str(), valores, n))
+            return true;
+
+        std::cerr << "Entrada invalida: digite " << n
+                  << (n == 1 ? " numero" : " numeros separados por espaco")
+                  << " (use ponto como separador decimal).\n";
+    }
+}
+
+//Obtém raio e posição do Sol pelos argumentos ou pelo teclado.
+//Retorna false se não for possível obter uma cena válida.
+bool obterParametros(int argc, char** argv)
+{
+    //modo por argumentos: ./planeta <raio> <solX> <solY> <solZ>
+    if (argc == 5)
+    {
+        float valores[4];
+
+        for (int i = 0; i < 4; i++)
+        {
+            if (!lerNumeros(argv[i + 1], &valores[i], 1))
+            {
+                std::cerr << "Erro: argumento invalido '" << argv[i + 1] << "'.\n";
+                mostrarUso(argv[0]);
+                return false;
+            }
+        }
+
+        raio   = valores[0];
+        sol[0] = valores[1];
+        sol[1] = valores[2];
+        sol[2] = valores[3];
+
+        const char* erro = validarCena(raio, sol);
+        if (erro)
+        {
+            std::cerr << "Erro: " << erro << "\n";
+            return false;
+        }
+        return true;
+    }
+
+    //qualquer quantidade diferente de 0 ou 4 argumentos é erro
+    if (argc != 1)
+    {
+        std::cerr << "Erro: numero de argumentos incorreto.\n";
+        mostrarUso(argv[0]);
+        return false;
+    }
+
+    //modo interativo: pergunta até obter uma cena válida
+    while (true)
+    {
+        if (!perguntarNumeros("Raio do planeta: ", &raio, 1) ||
+            !perguntarNumeros("Posicao do Sol (x y z): ", sol, 3))
+        {
+            std::cerr << "\nEntrada encerrada.\n";
+            return false;
+        }
+
+        const char* erro = validarCena(raio, sol);
+        if (!erro)
+            return true;
+
+        std::cerr << "Erro: " << erro << " Tente novamente.\n\n";
+    }
+}
 
 void iniciar()
 {
@@ -48,7 +194,7 @@ void iniciar()
    //Calcula o enquadramento: a câmera olha para o ponto médio entre
    //o planeta e o Sol, afastada o bastante para enquadrar os dois.
    float distSol = std::sqrt(sol[0]*sol[0] + sol[1]*sol[1] + sol[2]*sol[2]);
-   raioSol = 0.25f * raio;
+   raioSol = PROPORCAO_SOL * raio;
 
    alvo[0] = sol[0] * 0.5f;
    alvo[1] = sol[1] * 0.5f;
@@ -146,30 +292,8 @@ void teclar(GLFWwindow* janela, int tecla, int codigo, int acao, int modificador
 
 int main(int argc, char** argv)
 {
-    if (argc >= 5)
-    {
-        raio   = std::strtof(argv[1], NULL);
-        sol[0] = std::strtof(argv[2], NULL);
-        sol[1] = std::strtof(argv[3], NULL);
-        sol[2] = std::strtof(argv[4], NULL);
-    }
-    else
-    {
-        std::cout << "Raio do planeta: ";
-        std::cin >> raio;
-        std::cout << "Posicao do Sol (x y z): ";
-        std::cin >> sol[0] >> sol[1] >> sol[2];
-    }
-
-    if (raio <= 0.0f)
-    {
-        std::cerr << "O raio deve ser positivo.\n";
+    if (!obterParametros(argc, argv))
         return EXIT_FAILURE;
-    }
-
-    float distSol = std::sqrt(sol[0]*sol[0] + sol[1]*sol[1] + sol[2]*sol[2]);
-    if (distSol <= raio)
-        std::cerr << "Aviso: o Sol esta dentro do planeta; nao sera visivel.\n";
 
     if (!glfwInit())
         return -1;
@@ -202,7 +326,7 @@ int main(int argc, char** argv)
 
     std::cout << "Controles: R = alternar solido/malha | ESC = sair\n";
 
-    //Limitador de quadros por software: garante o ritmo mesmo quando o
+    //limitador de quadros por software: garante o ritmo mesmo quando o
     //vsync é ignorado pelo ambiente (WSLg). Cada quadro tem um
     //horário agendado; o loop dorme até ele, liberando a CPU.
     using Relogio = std::chrono::steady_clock;
