@@ -17,6 +17,9 @@
 #include <cstdlib>
 #include <iostream>
 
+#include <chrono>
+#include <thread>
+
 float raio = 1.0f;
 float sol[3] = {5.0f, 2.0f, 3.0f};
 float raioSol;            // tamanho do Sol, proporcional ao planeta
@@ -26,6 +29,8 @@ float extensao;           // tamanho da cena, usado para enquadrar
 
 bool malha = false;
 const float FOV = 45.0f;
+
+const double FPS_MAXIMO = 60.0;   // limite de quadros por segundo (limitador por software)
 
 GLUquadric* quadrica;
 
@@ -178,6 +183,10 @@ int main(int argc, char** argv)
 
     glfwMakeContextCurrent(janela);
 
+    //sincroniza a troca de buffers com a atualização do monitor (V-Sync):
+    //limita o loop à taxa do monitor e evita processamento desnecessário
+    glfwSwapInterval(1);
+
     //funções orientadas a eventos de entrada
     glfwSetFramebufferSizeCallback(janela, redimensionar);
     glfwSetKeyCallback(janela, teclar);
@@ -193,11 +202,41 @@ int main(int argc, char** argv)
 
     std::cout << "Controles: R = alternar solido/malha | ESC = sair\n";
 
+    //Limitador de quadros por software: garante o ritmo mesmo quando o
+    //vsync é ignorado pelo ambiente (WSLg). Cada quadro tem um
+    //horário agendado; o loop dorme até ele, liberando a CPU.
+    using Relogio = std::chrono::steady_clock;
+    const auto periodoQuadro = std::chrono::duration_cast<Relogio::duration>(
+        std::chrono::duration<double>(1.0 / FPS_MAXIMO));
+    auto proximoQuadro = Relogio::now();
+
     while (!glfwWindowShouldClose(janela))
     {
+        //contador de FPS (temporário, para teste)
+        static double ultimoTempo = glfwGetTime();
+        static int quadros = 0;
+        quadros++;
+        double agora = glfwGetTime();
+        if (agora - ultimoTempo >= 1.0)
+        {
+            char titulo[64];
+            std::snprintf(titulo, sizeof(titulo), "Planeta e Sol - Etapa 1 | %d FPS", quadros);
+            glfwSetWindowTitle(janela, titulo);
+            quadros = 0;
+            ultimoTempo = agora;
+        }
+
         desenhar();
 
         glfwPollEvents();
+
+        //agenda o próximo quadro e dorme até lá
+        proximoQuadro += periodoQuadro;
+        auto agoraRelogio = Relogio::now();
+        if (proximoQuadro > agoraRelogio)
+            std::this_thread::sleep_until(proximoQuadro);
+        else
+            proximoQuadro = agoraRelogio;   //quadro atrasou: reinicia a agenda, sem rajada
     }
 
     gluDeleteQuadric(quadrica);
