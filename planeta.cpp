@@ -89,7 +89,7 @@ const float DT_MAXIMO = 0.1f;  // maior passo de tempo simulado por quadro (s)
 //camera em 3ª pessoa, em multiplos do comprimento do aviao
 const float CAMERA_ATRAS   = 3.0f;    // quanto fica atras do aviao
 const float CAMERA_ALTURA  = 1.2f;    // quanto fica acima do aviao
-const float CAMERA_ADIANTE = 2.0f;    // ponto mirado, à frente do aviao
+const float CAMERA_ADIANTE = 2.0f;    // ponto mirado, a frente do aviao
 
 // ---------------------------------------------------------------------------
 // Estado do aviao
@@ -427,7 +427,7 @@ void atualizarVoo(GLFWwindow* janela, float dt)
         rotacionar(aviaoFrente, aviaoCima, sentidoGiro * VEL_GIRO * PI / 180.0f * dt);
 
     //3. Avanco: andar sobre a esfera e girar em torno do centro do planeta.
-    //O eixo e perpendicular ao up e à frente (cima x frente); o angulo e o
+    //O eixo e perpendicular ao up e a frente (cima x frente); o angulo e o
     //arco percorrido dividido pelo raio da orbita (s = r * theta).
     //Up e frente giram juntos, entao o aviao continua tangente ao planeta.
     float anguloAvanco = velocidade * dt / (raio + altitude);
@@ -623,14 +623,14 @@ void aplicarPose(PoseAviao pose)
 //Transformacao de visualizacao (gluLookAt), na matriz MODELVIEW.
 //gluLookAt recebe o olho (e), um ponto mirado (e + g) e o view-up (t), e
 //monta a base da camera: w = -g/|g|, u = t x w (normalizado), v = w x u.
-//Por isso o up nao precisa ser perpendicular à direcao do olhar.
+//Por isso o up nao precisa ser perpendicular a direcao do olhar.
 void posicionarCamera()
 {
     float olho[3], mira[3];
 
     if (terceiraPessoa)
     {
-        //atras e acima do aviao, mirando um pouco à frente dele
+        //atras e acima do aviao, mirando um pouco a frente dele
         for (int i = 0; i < 3; i++)
         {
             olho[i] = aviaoPos[i]
@@ -821,7 +821,7 @@ int main(int argc, char** argv)
     glfwMakeContextCurrent(janela);
 
     //sincroniza a troca de buffers com a atualizacao do monitor (V-Sync):
-    //limita o loop à taxa do monitor e evita processamento desnecessario
+    //limita o loop a taxa do monitor e evita processamento desnecessario
     glfwSwapInterval(1);
 
     //funcoes orientadas a eventos de entrada
