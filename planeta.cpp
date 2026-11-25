@@ -1,29 +1,32 @@
-// Etapa 2: o aviao sobrevoa o planeta, com camera em 1ª pessoa.
+// Etapa 3: o aviao sobrevoa um planeta com relevo e texturas, com camera
+//          em 1a pessoa.
+//   - Planeta: malha propria (vertex arrays) com relevo lido de um mapa de
+//     altura (heightmap) e textura de cor alinhada a ele
+//   - Sol: esfera emissiva e texturizada, na mesma posicao da fonte de luz
+//   - Iluminacao: luz difusa vinda do Sol + luz ambiente (lado noturno visivel)
+//
 // Controles: D = decolar | P = pousar | setas cima/baixo = velocidade
-//            setas laterais = girar | C = camera 1ª/3ª pessoa
+//            setas laterais = girar | C = camera 1a/3a pessoa
 //            R = solido/malha | ESC = sair
 //
-// Compilar no Linux:
-// g++ -o planeta planeta.cpp -lglfw -lGL -lGLU
+// Imagens (formato PPM/PGM, lidas pelo proprio programa):
+//   texturas/terra_cor.ppm     cor do planeta    (NASA Blue Marble)
+//   texturas/terra_altura.pgm  relevo do planeta (NASA/GEBCO)
+//   texturas/sol.ppm           cor do Sol        (Solar System Scope, CC BY 4.0)
+// O programa deve ser executado a partir da pasta do projeto, pois os
+// caminhos das imagens sao relativos a ela. Se faltar alguma imagem, o
+// programa avisa e usa cor solida / planeta liso.
 //
 // Uso:  ./planeta <raio> <solX> <solY> <solZ>
 // Ex.:  ./planeta 1.0 5 2 3
 // Sem argumentos, os valores sao lidos da entrada padrao.
-
-// Compilar pelo makefile:
-// make all
-
-// Executar pelo makefile:
-// make run
-
-// Executar com parametros de teste pelo makefile:
-// make run-args
-
-// Limpa os arquivos gerados pelo makefile:
-// make clean
-
-// Limpa e recompila os arquivos gerados pelo makefile:
-// make rebuild
+//
+// Makefile:
+//   make all       compila
+//   make run       compila e executa (valores pelo teclado)
+//   make run-args  compila e executa com parametros de teste (1.0 5 2 3)
+//   make clean     apaga os arquivos gerados
+//   make rebuild   apaga e recompila
 
 #include <GL/gl.h>
 #include <GL/glu.h>
@@ -568,6 +571,74 @@ void carregarMapaAltura()
 }
 
 // ---------------------------------------------------------------------------
+// Texturas de cor
+// ---------------------------------------------------------------------------
+
+const char* ARQUIVO_COR_PLANETA = "texturas/terra_cor.ppm";
+const char* ARQUIVO_COR_SOL     = "texturas/sol.ppm";
+
+GLuint texPlaneta = 0;   // identificadores dos objetos de textura
+GLuint texSol     = 0;   // (0 = sem textura: usa cor solida)
+
+//Passos 1 e 2 do slide de texturas: cria o objeto de textura, envia a
+//imagem e define como ela e amostrada. Retorna 0 se nao conseguir.
+GLuint carregarTextura(const char* caminho)
+{
+    Imagem img;
+    if (!lerImagemPNM(caminho, img))
+        return 0;
+
+    GLenum formato = (img.canais == 3) ? GL_RGB : GL_LUMINANCE;
+
+    GLuint id;
+    glGenTextures(1, &id);
+    glBindTexture(GL_TEXTURE_2D, id);
+
+    //as linhas da imagem estao coladas umas nas outras (sem bytes de
+    //preenchimento): o padrao do OpenGL supoe linhas multiplas de 4 bytes
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+
+    //longitude (s) da a volta no planeta; latitude (t) para nos polos
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+
+    //perto: interpola entre texels; longe: usa as versoes reduzidas
+    //(mipmaps), evitando o "chuvisco" quando muitos texels caem num pixel
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+
+    //equivale ao glTexImage2D do exemplo da aula, mas tambem gera os mipmaps
+    GLint erro = gluBuild2DMipmaps(GL_TEXTURE_2D, formato, img.largura, img.altura,
+                                   formato, GL_UNSIGNED_BYTE, img.dados.data());
+    glBindTexture(GL_TEXTURE_2D, 0);
+
+    if (erro != 0)
+    {
+        std::cerr << "Erro: nao foi possivel criar a textura de '" << caminho << "': "
+                  << (const char*)gluErrorString(erro) << "\n";
+        glDeleteTextures(1, &id);
+        return 0;
+    }
+    return id;
+}
+
+//Passo 3 do slide: habilita a textura. GL_MODULATE multiplica a cor da
+//textura pela cor calculada pela iluminacao, entao o lado do planeta
+//oposto ao Sol continua escuro (GL_DECAL, do exemplo, ignoraria a luz).
+void ligarTextura(GLuint id)
+{
+    glEnable(GL_TEXTURE_2D);
+    glBindTexture(GL_TEXTURE_2D, id);
+    glTexEnvf(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
+}
+
+void desligarTextura()
+{
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glDisable(GL_TEXTURE_2D);
+}
+
+// ---------------------------------------------------------------------------
 // Malha do planeta: geracao e desenho
 // ---------------------------------------------------------------------------
 
@@ -887,8 +958,8 @@ bool iniciar()
    planoProximo  = 0.05f * tamanhoAviao;
    planoDistante = 2.0f * (distSol + raio + alturaVoo);
 
-   //Iluminacao: o Sol e a fonte de luz (ambiente 0.15 + difusa 0.85)
-   float ambienteGlobal[] = {0.15f, 0.15f, 0.15f, 1.0f};
+   //Iluminacao: o Sol e a fonte de luz (ambiente 0.25 + difusa 0.85)
+   float ambienteGlobal[] = {0.25f, 0.25f, 0.25f, 1.0f};
    float difusa[]         = {0.85f, 0.85f, 0.85f, 1.0f};
    float ambienteLuz[]    = {0.0f, 0.0f, 0.0f, 1.0f};
 
@@ -909,6 +980,12 @@ bool iniciar()
    carregarMapaAltura();
    gerarMalhaPlaneta();
 
+   //texturas de cor; se alguma faltar, o objeto usa cor solida
+   texPlaneta = carregarTextura(ARQUIVO_COR_PLANETA);
+   texSol     = carregarTextura(ARQUIVO_COR_SOL);
+   if (!texPlaneta || !texSol)
+       std::cerr << "Aviso: textura ausente; sera usada cor solida.\n";
+
    //objeto usado por gluSphere
    quadrica = gluNewQuadric();
    if (!quadrica)
@@ -917,6 +994,7 @@ bool iniciar()
        return false;
    }
    gluQuadricNormals(quadrica, GLU_SMOOTH);
+   gluQuadricTexture(quadrica, GL_TRUE);   //gluSphere gera coordenadas de textura
 
    return true;
 }
@@ -1079,10 +1157,19 @@ void desenhar(GLFWwindow* janela)
     float posicaoLuz[] = {sol[0], sol[1], sol[2], 1.0f};
     glLightfv(GL_LIGHT0, GL_POSITION, posicaoLuz);
 
-    //Planeta: centro na origem, iluminado pelo Sol
+    //Planeta: centro na origem, iluminado pelo Sol. Com textura, a cor do
+    //material e branca: quem da a cor e a textura, modulada pela luz.
     glEnable(GL_LIGHTING);
-    glColor3f(0.25f, 0.5f, 0.9f);
+    if (texPlaneta)
+    {
+        ligarTextura(texPlaneta);
+        glColor3f(1.0f, 1.0f, 1.0f);
+    }
+    else
+        glColor3f(0.25f, 0.5f, 0.9f);
+
     desenharPlaneta();
+    desligarTextura();   //senao o aviao seria pintado com a textura da Terra
 
     //Aviao: so aparece em 3ª pessoa (em 1ª pessoa o olho esta dentro dele).
     //A matriz de orientacao muda do sistema local do aviao para o do mundo:
@@ -1109,13 +1196,28 @@ void desenhar(GLFWwindow* janela)
         glPopMatrix();
     }
 
-    //Sol: esfera amarela na posicao da luz, sem iluminacao
-    glDisable(GL_LIGHTING);
+    //Sol: na posicao da luz, com material emissivo (slide de shading: a cor
+    //emissiva "simula luz originada no objeto" e nao depende das fontes de
+    //luz). Com textura, a emissao e branca e a textura da a cor.
+    float emissaoSol[] = {1.0f, 0.9f, 0.1f, 1.0f};
+    float semEmissao[] = {0.0f, 0.0f, 0.0f, 1.0f};
+
+    if (texSol)
+    {
+        emissaoSol[1] = emissaoSol[2] = 1.0f;
+        ligarTextura(texSol);
+    }
+
     glPushMatrix();
     glTranslatef(sol[0], sol[1], sol[2]);
-    glColor3f(1.0f, 0.9f, 0.1f);
+    glColor3f(1.0f, 1.0f, 1.0f);
+    glMaterialfv(GL_FRONT_AND_BACK, GL_EMISSION, emissaoSol);
     gluSphere(quadrica, raioSol, 48, 24);
+    glMaterialfv(GL_FRONT_AND_BACK, GL_EMISSION, semEmissao);
     glPopMatrix();
+
+    desligarTextura();
+    glDisable(GL_LIGHTING);
 
     //troca de buffers
     glfwSwapBuffers(janela);
@@ -1185,7 +1287,7 @@ void atualizarTitulo(GLFWwindow* janela, int fps)
 {
     char titulo[128];
     std::snprintf(titulo, sizeof(titulo),
-                  "Etapa 2 | %s | vel %.2f raios/s | camera %s | %d FPS",
+                  "Etapa 3 | %s | vel %.2f raios/s | camera %s | %d FPS",
                   NOME_ESTADO[estado], velocidade / raio,
                   terceiraPessoa ? "3a pessoa" : "1a pessoa", fps);
     glfwSetWindowTitle(janela, titulo);
@@ -1207,7 +1309,7 @@ int main(int argc, char** argv)
         return EXIT_FAILURE;
     }
 
-    GLFWwindow* janela = glfwCreateWindow(1024, 768, "Etapa 2", NULL, NULL);
+    GLFWwindow* janela = glfwCreateWindow(1024, 768, "Etapa 3", NULL, NULL);
 
     if (!janela)
     {
@@ -1293,6 +1395,8 @@ int main(int argc, char** argv)
             proximoQuadro = agoraRelogio;   //quadro atrasou: reinicia a agenda, sem rajada
     }
 
+    glDeleteTextures(1, &texPlaneta);
+    glDeleteTextures(1, &texSol);
     gluDeleteQuadric(quadrica);
     glfwDestroyWindow(janela);
     glfwTerminate();
