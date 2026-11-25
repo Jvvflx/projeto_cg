@@ -129,6 +129,21 @@ const float ANGULO_YAW    = 10.0f;  // quanto o nariz aponta para o lado da curv
 
 GLUquadric* quadrica;
 
+// ---------------------------------------------------------------------------
+// Malha do planeta (vertex arrays)
+// ---------------------------------------------------------------------------
+
+//Resolucao da malha: FATIAS divisoes na longitude, PILHAS na latitude
+const int FATIAS = 256;
+const int PILHAS = 128;
+
+//Arrays usados por glDrawElements: posicao e normal (3 floats por vertice),
+//coordenada de textura (2 floats por vertice) e indices (3 por triangulo)
+std::vector<float> verticesPlaneta;
+std::vector<float> normaisPlaneta;
+std::vector<float> texturaPlaneta;
+std::vector<unsigned int> indicesPlaneta;
+
 //Converte o texto em exatamente n numeros reais finitos.
 //Retorna false se faltar numero, sobrar caractere, houver estouro
 //de faixa ou valor nao finito (nan, inf).
@@ -482,6 +497,157 @@ bool lerImagemPNM(const char* caminho, Imagem& img)
 }
 
 // ---------------------------------------------------------------------------
+// Malha do planeta: geracao e desenho
+// ---------------------------------------------------------------------------
+
+//Direcao (unitaria) do ponto da esfera com coordenadas de textura (u, v).
+//E o mapeamento esferico: a imagem equirretangular cobre a esfera inteira.
+//  u = 0..1 -> longitude 0..360 graus, crescendo para o leste
+//  v = 0..1 -> do polo norte (v = 0) ao polo sul (v = 1)
+void direcaoEsfera(float u, float v, float d[3])
+{
+    float longitude = 2.0f * PI * u;
+    float polar     = PI * v;          //angulo medido a partir do polo norte
+
+    d[0] =  std::sin(polar) * std::cos(longitude);
+    d[1] =  std::cos(polar);
+    d[2] = -std::sin(polar) * std::sin(longitude);
+}
+
+//Altura do terreno acima do raio no ponto (u, v). Por enquanto o planeta
+//e liso; na proxima etapa este valor vem do heightmap.
+float alturaTerreno(float /*u*/, float /*v*/)
+{
+    return 0.0f;
+}
+
+//Normal de cada vertice a partir dos vizinhos na grade (diferencas centrais):
+//  tangente leste = P(i, j+1) - P(i, j-1)
+//  tangente sul   = P(i+1, j) - P(i-1, j)
+//  normal         = sul x leste (aponta para fora do planeta)
+//Vale para qualquer forma: com relevo, as encostas passam a ter normais
+//inclinadas e a luz do Sol as ilumina de forma diferente.
+void calcularNormaisPlaneta()
+{
+    int colunas = FATIAS + 1;
+
+    for (int i = 0; i <= PILHAS; i++)
+    {
+        for (int j = 0; j <= FATIAS; j++)
+        {
+            float* n = &normaisPlaneta[3 * (i * colunas + j)];
+
+            //nos polos todos os vertices da linha coincidem: normal = eixo
+            if (i == 0 || i == PILHAS)
+            {
+                n[0] = 0.0f;
+                n[1] = (i == 0) ? 1.0f : -1.0f;
+                n[2] = 0.0f;
+                continue;
+            }
+
+            //a coluna FATIAS repete a coluna 0, entao os vizinhos dao a volta
+            int jOeste = (j == 0) ? FATIAS - 1 : j - 1;
+            int jLeste = (j == FATIAS) ? 1 : j + 1;
+
+            const float* pOeste = &verticesPlaneta[3 * (i * colunas + jOeste)];
+            const float* pLeste = &verticesPlaneta[3 * (i * colunas + jLeste)];
+            const float* pNorte = &verticesPlaneta[3 * ((i - 1) * colunas + j)];
+            const float* pSul   = &verticesPlaneta[3 * ((i + 1) * colunas + j)];
+
+            float leste[3], sul[3];
+            for (int c = 0; c < 3; c++)
+            {
+                leste[c] = pLeste[c] - pOeste[c];
+                sul[c]   = pSul[c]   - pNorte[c];
+            }
+            produtoVetorial(sul, leste, n);
+            normalizar(n);
+        }
+    }
+}
+
+//Monta a grade de (PILHAS + 1) x (FATIAS + 1) vertices e os triangulos.
+//A ultima coluna repete a primeira na posicao, mas com u = 1 em vez de 0:
+//sem ela, o ultimo quadrado de cada faixa iria de u = 0.99 a u = 0 e a
+//textura inteira apareceria espremida nessa faixa (a "costura").
+void gerarMalhaPlaneta()
+{
+    int colunas = FATIAS + 1;
+    int linhas  = PILHAS + 1;
+
+    verticesPlaneta.assign(3 * colunas * linhas, 0.0f);
+    normaisPlaneta.assign(3 * colunas * linhas, 0.0f);
+    texturaPlaneta.assign(2 * colunas * linhas, 0.0f);
+
+    for (int i = 0; i < linhas; i++)
+    {
+        for (int j = 0; j < colunas; j++)
+        {
+            int k = i * colunas + j;
+            float u = (float)j / FATIAS;
+            float v = (float)i / PILHAS;
+
+            float d[3];
+            direcaoEsfera(u, v, d);
+            float r = raio + alturaTerreno(u, v);
+
+            for (int c = 0; c < 3; c++)
+                verticesPlaneta[3 * k + c] = r * d[c];
+
+            texturaPlaneta[2 * k]     = u;
+            texturaPlaneta[2 * k + 1] = v;
+        }
+    }
+
+    //dois triangulos por quadrado da grade, no sentido anti-horario visto
+    //de fora (a = canto noroeste, b = canto sudoeste)
+    indicesPlaneta.clear();
+    indicesPlaneta.reserve(6 * FATIAS * PILHAS);
+
+    for (int i = 0; i < PILHAS; i++)
+    {
+        for (int j = 0; j < FATIAS; j++)
+        {
+            unsigned int a = i * colunas + j;
+            unsigned int b = a + colunas;
+
+            indicesPlaneta.push_back(a);
+            indicesPlaneta.push_back(b);
+            indicesPlaneta.push_back(a + 1);
+
+            indicesPlaneta.push_back(a + 1);
+            indicesPlaneta.push_back(b);
+            indicesPlaneta.push_back(b + 1);
+        }
+    }
+
+    calcularNormaisPlaneta();
+}
+
+//Desenha o planeta com vertex arrays (como nos exemplos 05 e 08 da aula).
+//glDrawElements percorre os indices: cada vertice existe uma vez so e e
+//compartilhado pelos triangulos vizinhos.
+void desenharPlaneta()
+{
+    glEnableClientState(GL_VERTEX_ARRAY);
+    glEnableClientState(GL_NORMAL_ARRAY);
+    glEnableClientState(GL_TEXTURE_COORD_ARRAY);
+
+    glVertexPointer(3, GL_FLOAT, 0, verticesPlaneta.data());
+    glNormalPointer(GL_FLOAT, 0, normaisPlaneta.data());
+    glTexCoordPointer(2, GL_FLOAT, 0, texturaPlaneta.data());
+
+    glDrawElements(GL_TRIANGLES, (GLsizei)indicesPlaneta.size(),
+                   GL_UNSIGNED_INT, indicesPlaneta.data());
+
+    //desliga os arrays para nao afetarem o desenho do Sol e do aviao
+    glDisableClientState(GL_TEXTURE_COORD_ARRAY);
+    glDisableClientState(GL_NORMAL_ARRAY);
+    glDisableClientState(GL_VERTEX_ARRAY);
+}
+
+// ---------------------------------------------------------------------------
 // Voo: comandos e atualizacao
 // ---------------------------------------------------------------------------
 
@@ -651,6 +817,9 @@ bool iniciar()
    //para a iluminacao continuar correta
    glEnable(GL_NORMALIZE);
 
+   //malha propria do planeta (substitui o gluSphere)
+   gerarMalhaPlaneta();
+
    //objeto usado por gluSphere
    quadrica = gluNewQuadric();
    if (!quadrica)
@@ -659,16 +828,6 @@ bool iniciar()
        return false;
    }
    gluQuadricNormals(quadrica, GLU_SMOOTH);
-
-   //TESTE TEMPORARIO da etapa 1: apagar depois
-   const char* arquivos[] = {"texturas/terra_cor.ppm", "texturas/terra_altura.pgm", "texturas/sol.ppm"};
-   for (const char* nome : arquivos)
-   {
-       Imagem teste;
-       if (lerImagemPNM(nome, teste))
-           std::cout << nome << ": " << teste.largura << "x" << teste.altura
-                     << ", " << teste.canais << " canal(is)\n";
-   }
 
    return true;
 }
@@ -834,7 +993,7 @@ void desenhar(GLFWwindow* janela)
     //Planeta: centro na origem, iluminado pelo Sol
     glEnable(GL_LIGHTING);
     glColor3f(0.25f, 0.5f, 0.9f);
-    gluSphere(quadrica, raio, 192, 96);
+    desenharPlaneta();
 
     //Aviao: so aparece em 3ª pessoa (em 1ª pessoa o olho esta dentro dele).
     //A matriz de orientacao muda do sistema local do aviao para o do mundo:
