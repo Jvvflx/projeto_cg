@@ -144,6 +144,12 @@ std::vector<float> normaisPlaneta;
 std::vector<float> texturaPlaneta;
 std::vector<unsigned int> indicesPlaneta;
 
+//Relevo: o heightmap vai de 0 (nivel do mar) a 255 (ponto mais alto).
+//O relevo real e minusculo perto do raio (o Everest e 0,14% do raio da
+//Terra), entao e exagerado para aparecer no voo.
+const float PROPORCAO_RELEVO = 0.05f;   // altura maxima do relevo, em raios
+const char* ARQUIVO_ALTURA   = "texturas/terra_altura.pgm";
+
 //Converte o texto em exatamente n numeros reais finitos.
 //Retorna false se faltar numero, sobrar caractere, houver estouro
 //de faixa ou valor nao finito (nan, inf).
@@ -194,7 +200,7 @@ const char* validarCena(float raioPlaneta, const float posSol[3])
 
     //o aviao voa a uma distancia raio + h do centro: o Sol nao pode
     //alcancar essa altura, senao o aviao atravessaria o Sol
-    float alcanceAviao = raioPlaneta * (1.0f + PROPORCAO_ALTURA_VOO + PROPORCAO_AVIAO);
+    float alcanceAviao = raioPlaneta * (1.0f + PROPORCAO_RELEVO + PROPORCAO_ALTURA_VOO + PROPORCAO_AVIAO);
     if (distSol <= alcanceAviao + raioPlaneta * PROPORCAO_SOL)
         return "o Sol esta na altura de voo do aviao; afaste-o do centro.";
     return NULL;
@@ -497,6 +503,71 @@ bool lerImagemPNM(const char* caminho, Imagem& img)
 }
 
 // ---------------------------------------------------------------------------
+// Heightmap (mapa de altura)
+// ---------------------------------------------------------------------------
+
+Imagem mapaAltura;            // vazio = planeta liso
+float  alturaMaximaRelevo;    // PROPORCAO_RELEVO * raio
+
+//Valor (0 a 1) de um pixel do heightmap. Na horizontal a imagem da a
+//volta no planeta (depois da ultima coluna vem a primeira); na vertical
+//para na borda (polos).
+float pixelAltura(int x, int y)
+{
+    int largura = mapaAltura.largura;
+    int altura  = mapaAltura.altura;
+
+    x = ((x % largura) + largura) % largura;
+    y = std::max(0, std::min(y, altura - 1));
+
+    return mapaAltura.dados[y * largura + x] / 255.0f;
+}
+
+//Valor do heightmap em (u, v), de 0 a 1, com interpolacao bilinear: media
+//dos 4 pixels mais proximos, ponderada pela distancia. Sem isso, cada
+//pixel viraria um "degrau" no relevo.
+float amostrarAltura(float u, float v)
+{
+    if (mapaAltura.dados.empty())
+        return 0.0f;
+
+    //o centro do pixel x fica em u = (x + 0.5) / largura
+    float x = u * mapaAltura.largura - 0.5f;
+    float y = v * mapaAltura.altura  - 0.5f;
+
+    int x0 = (int)std::floor(x);
+    int y0 = (int)std::floor(y);
+    float fx = x - x0;                  //peso do pixel da direita
+    float fy = y - y0;                  //peso do pixel de baixo
+
+    float cima  = pixelAltura(x0, y0)     * (1 - fx) + pixelAltura(x0 + 1, y0)     * fx;
+    float baixo = pixelAltura(x0, y0 + 1) * (1 - fx) + pixelAltura(x0 + 1, y0 + 1) * fx;
+
+    return cima * (1 - fy) + baixo * fy;
+}
+
+//Carrega o heightmap. Se faltar ou estiver no formato errado, avisa e o
+//planeta fica liso: o simulador continua funcionando.
+void carregarMapaAltura()
+{
+    alturaMaximaRelevo = PROPORCAO_RELEVO * raio;
+
+    if (!lerImagemPNM(ARQUIVO_ALTURA, mapaAltura))
+    {
+        std::cerr << "Aviso: sem mapa de altura; o planeta sera desenhado liso.\n";
+        mapaAltura.dados.clear();
+        return;
+    }
+
+    if (mapaAltura.canais != 1)
+    {
+        std::cerr << "Aviso: '" << ARQUIVO_ALTURA << "' deve estar em tons de cinza"
+                  << " (exporte como .pgm); o planeta sera desenhado liso.\n";
+        mapaAltura.dados.clear();
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Malha do planeta: geracao e desenho
 // ---------------------------------------------------------------------------
 
@@ -514,11 +585,21 @@ void direcaoEsfera(float u, float v, float d[3])
     d[2] = -std::sin(polar) * std::sin(longitude);
 }
 
-//Altura do terreno acima do raio no ponto (u, v). Por enquanto o planeta
-//e liso; na proxima etapa este valor vem do heightmap.
-float alturaTerreno(float /*u*/, float /*v*/)
+//Altura do terreno acima do raio no ponto (u, v), lida do heightmap
+float alturaTerreno(float u, float v)
 {
-    return 0.0f;
+    return amostrarAltura(u, v) * alturaMaximaRelevo;
+}
+
+//Altura media de uma linha da imagem. Usada nos polos: la todos os
+//vertices da linha sao o mesmo ponto, entao precisam da mesma altura
+//(senao o polo viraria um espinho).
+float alturaMediaLinha(float v)
+{
+    float soma = 0.0f;
+    for (int j = 0; j < FATIAS; j++)
+        soma += alturaTerreno((float)j / FATIAS, v);
+    return soma / FATIAS;
 }
 
 //Normal de cada vertice a partir dos vizinhos na grade (diferencas centrais):
@@ -582,6 +663,11 @@ void gerarMalhaPlaneta()
 
     for (int i = 0; i < linhas; i++)
     {
+
+        float alturaPolo = 0.0f;
+        if (i == 0 || i == PILHAS)
+            alturaPolo = alturaMediaLinha((float)i / PILHAS);
+
         for (int j = 0; j < colunas; j++)
         {
             int k = i * colunas + j;
@@ -590,7 +676,9 @@ void gerarMalhaPlaneta()
 
             float d[3];
             direcaoEsfera(u, v, d);
-            float r = raio + alturaTerreno(u, v);
+
+            bool polo = (i == 0 || i == PILHAS);
+            float r = raio + (polo ? alturaPolo : alturaTerreno(u, v));
 
             for (int c = 0; c < 3; c++)
                 verticesPlaneta[3 * k + c] = r * d[c];
@@ -817,7 +905,8 @@ bool iniciar()
    //para a iluminacao continuar correta
    glEnable(GL_NORMALIZE);
 
-   //malha propria do planeta (substitui o gluSphere)
+   //relevo do planeta e malha propria (substitui o gluSphere)
+   carregarMapaAltura();
    gerarMalhaPlaneta();
 
    //objeto usado por gluSphere
