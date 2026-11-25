@@ -39,6 +39,7 @@
 #include <cerrno>
 #include <string>
 #include <cstdio>
+#include <vector>
 
 float raio = 1.0f;
 float sol[3] = {5.0f, 2.0f, 3.0f};
@@ -341,6 +342,146 @@ void rotacionar(float v[3], const float k[3], float angulo)
 }
 
 // ---------------------------------------------------------------------------
+// Leitura de imagens PPM/PGM (formato visto na aula de imagens)
+// ---------------------------------------------------------------------------
+
+//Imagem em memoria: texels em sequencia, linha por linha, a partir da
+//linha de cima. canais = 3 (RGB, arquivo .ppm) ou 1 (cinza, arquivo .pgm).
+struct Imagem
+{
+    int largura = 0;
+    int altura  = 0;
+    int canais  = 0;
+    std::vector<unsigned char> dados;
+};
+
+//Le o proximo numero do cabecalho, pulando espacos e comentarios (#...).
+//Retorna false se o arquivo acabar ou se houver algo que nao e numero.
+bool lerNumeroCabecalho(std::FILE* arquivo, int& valor)
+{
+    int c = std::fgetc(arquivo);
+
+    while (c != EOF && (std::isspace(c) || c == '#'))
+    {
+        if (c == '#')                       //comentario: vai ate o fim da linha
+            while (c != EOF && c != '\n')
+                c = std::fgetc(arquivo);
+        c = std::fgetc(arquivo);
+    }
+
+    if (c == EOF || !std::isdigit(c))
+        return false;
+
+    valor = 0;
+    while (c != EOF && std::isdigit(c))
+    {
+        if (valor > 100000000)              //evita estouro com numero absurdo
+            return false;
+        valor = valor * 10 + (c - '0');
+        c = std::fgetc(arquivo);
+    }
+
+    //o numero termina em um espaco; nos formatos binarios, logo apos o
+    //ultimo numero do cabecalho comecam os dados, entao nao le mais nada
+    return c == EOF || std::isspace(c);
+}
+
+//Le um arquivo PPM (P3 texto / P6 binario, colorido) ou PGM (P2 texto /
+//P5 binario, tons de cinza) com ate 8 bits por canal. Valores com maximo
+//menor que 255 sao reescalados para 0..255. Em caso de erro, explica o
+//motivo e retorna false.
+bool lerImagemPNM(const char* caminho, Imagem& img)
+{
+    std::FILE* arquivo = std::fopen(caminho, "rb");
+    if (!arquivo)
+    {
+        std::cerr << "Erro: nao foi possivel abrir a imagem '" << caminho << "'.\n";
+        return false;
+    }
+
+    //numero magico: P2, P3, P5 ou P6
+    char p = (char)std::fgetc(arquivo);
+    char tipo = (char)std::fgetc(arquivo);
+    bool texto = (tipo == '2' || tipo == '3');
+    bool valido = (p == 'P') && (tipo == '2' || tipo == '3' || tipo == '5' || tipo == '6');
+
+    if (!valido)
+    {
+        std::cerr << "Erro: '" << caminho << "' nao e um arquivo PPM/PGM"
+                  << " (esperado P2, P3, P5 ou P6 no inicio).\n";
+        std::fclose(arquivo);
+        return false;
+    }
+
+    int largura, altura, maximo;
+    if (!lerNumeroCabecalho(arquivo, largura) ||
+        !lerNumeroCabecalho(arquivo, altura)  ||
+        !lerNumeroCabecalho(arquivo, maximo))
+    {
+        std::cerr << "Erro: cabecalho invalido em '" << caminho << "'.\n";
+        std::fclose(arquivo);
+        return false;
+    }
+
+    if (largura <= 0 || altura <= 0 || largura > 16384 || altura > 16384)
+    {
+        std::cerr << "Erro: dimensoes invalidas em '" << caminho << "' ("
+                  << largura << "x" << altura << ").\n";
+        std::fclose(arquivo);
+        return false;
+    }
+
+    if (maximo <= 0 || maximo > 255)
+    {
+        std::cerr << "Erro: '" << caminho << "' usa " << maximo << " como valor maximo;"
+                  << " so imagens de 8 bits (maximo 255) sao aceitas.\n";
+        std::fclose(arquivo);
+        return false;
+    }
+
+    img.largura = largura;
+    img.altura  = altura;
+    img.canais  = (tipo == '3' || tipo == '6') ? 3 : 1;
+
+    size_t total = (size_t)largura * altura * img.canais;
+    img.dados.assign(total, 0);
+
+    bool completo = true;
+
+    if (texto)
+    {
+        for (size_t i = 0; i < total && completo; i++)
+        {
+            int v;
+            if (lerNumeroCabecalho(arquivo, v) && v <= maximo)
+                img.dados[i] = (unsigned char)v;
+            else
+                completo = false;
+        }
+    }
+    else
+    {
+        completo = std::fread(img.dados.data(), 1, total, arquivo) == total;
+    }
+
+    std::fclose(arquivo);
+
+    if (!completo)
+    {
+        std::cerr << "Erro: '" << caminho << "' esta incompleto ou corrompido"
+                  << " (faltam texels ou ha valores invalidos).\n";
+        return false;
+    }
+
+    //reescala para 0..255 quando o maximo do arquivo e menor
+    if (maximo != 255)
+        for (size_t i = 0; i < total; i++)
+            img.dados[i] = (unsigned char)(img.dados[i] * 255 / maximo);
+
+    return true;
+}
+
+// ---------------------------------------------------------------------------
 // Voo: comandos e atualizacao
 // ---------------------------------------------------------------------------
 
@@ -518,6 +659,16 @@ bool iniciar()
        return false;
    }
    gluQuadricNormals(quadrica, GLU_SMOOTH);
+
+   //TESTE TEMPORARIO da etapa 1: apagar depois
+   const char* arquivos[] = {"texturas/terra_cor.ppm", "texturas/terra_altura.pgm", "texturas/sol.ppm"};
+   for (const char* nome : arquivos)
+   {
+       Imagem teste;
+       if (lerImagemPNM(nome, teste))
+           std::cout << nome << ": " << teste.largura << "x" << teste.altura
+                     << ", " << teste.canais << " canal(is)\n";
+   }
 
    return true;
 }
